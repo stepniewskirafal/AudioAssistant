@@ -57,7 +57,7 @@ public class WhisperService {
             fileUtils.writeTextToFile(response, name + ".txt");
         });
         fileUtils.writeWordDocument(responseMap);
-        log.info("Finished processing meeting minutes");
+        log.info("Finished processing minutes");
     }
 
     public String getResponse(String systemMessage, String userMessage) {
