@@ -9,13 +9,15 @@ import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import pl.stepniewski.audioassistant.utilities.FileUtils;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -66,29 +68,33 @@ public class WhisperTranscribe {
         File file = new File(fileName);
 
         List<String> transcriptions = new ArrayList<>();
-        Queue<String> lastTwoTranscriptions = new LinkedList<>();
-        String prompt = "";
+        Queue<String> lastTwoTranscriptions = new ConcurrentLinkedQueue<>();
 
         if (file.length() <= maxAllowedSize) {
             String transcription = transcribeChunk(keyWordList, file).block();
             transcriptions.add(transcription);
         } else {
             List<File> chunks = wavFileSplitter.splitWavFileIntoChunks(file);
-            for (File chunk : chunks) {
-                String transcription = transcribeChunk(prompt, chunk).block();
-                transcriptions.add(transcription);
+            Flux<File> chunkFlux = Flux.fromIterable(chunks);
 
-                if (lastTwoTranscriptions.size() == 2) {
-                    lastTwoTranscriptions.poll();
-                }
-                lastTwoTranscriptions.offer(transcription);
+            transcriptions = chunkFlux.flatMap(chunk -> {
+                String prompt = lastTwoTranscriptions.stream()
+                        .collect(Collectors.joining(" "));
 
-                prompt = String.join(" ", lastTwoTranscriptions);
+                return transcribeChunk(prompt, chunk)
+                        .doOnNext(transcription -> {
+                            lastTwoTranscriptions.offer(transcription);
+                            if (lastTwoTranscriptions.size() > 2) {
+                                lastTwoTranscriptions.poll();
+                            }
+                            if (!chunk.delete()) {
+                                log.warn("Failed to delete {}", chunk.getName());
+                            }
+                            log.info("Processing of chunk: {} : - finished", chunk.getName());
+                        })
+                        .onErrorContinue((error, obj) -> log.error("Failed to transcribe chunk: {}", chunk.getName(), error));
+            }).collectList().block();
 
-                if (!chunk.delete()) {
-                    log.warn("Failed to delete {}", chunk.getName());
-                }
-            }
         }
 
         String transcription = String.join(" ", transcriptions);
